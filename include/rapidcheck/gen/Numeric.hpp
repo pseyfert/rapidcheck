@@ -1,10 +1,11 @@
 #pragma once
 
 #include "rapidcheck/detail/BitStream.h"
-#include "rapidcheck/shrinkable/Create.h"
-#include "rapidcheck/shrink/Shrink.h"
 #include "rapidcheck/gen/Transform.h"
 #include "rapidcheck/gen/detail/ScaleInteger.h"
+#include "rapidcheck/shrink/Shrink.h"
+#include "rapidcheck/shrinkable/Create.h"
+#include <limits>
 
 namespace rc {
 namespace gen {
@@ -36,16 +37,48 @@ extern template Shrinkable<unsigned long long>
 integral<unsigned long long>(const Random &random, int size);
 
 template <typename T>
-Shrinkable<T> real(const Random &random, int size) {
-  // TODO this implementation sucks
+T finite_real(const Random &random, int size) {
   auto stream = rc::detail::bitStreamOf(random);
-  const double scale =
-      std::min(size, kNominalSize) / static_cast<double>(kNominalSize);
-  const double a = static_cast<double>(stream.nextWithSize<int64_t>(size));
-  const double b =
-      (stream.next<uint64_t>() * scale) / static_cast<double>(std::numeric_limits<uint64_t>::max());
-  const T value = static_cast<T>(a + b);
-  return shrinkable::shrinkRecur(value, &shrink::real<T>);
+  auto spit_out_one_number = [&stream, size]() {
+    // TODO this implementation sucks
+    const double scale =
+        std::min(size, kNominalSize) / static_cast<double>(kNominalSize);
+    const double a = static_cast<double>(stream.nextWithSize<int64_t>(size));
+    const double b = (stream.next<uint64_t>() * scale) /
+        static_cast<double>(std::numeric_limits<uint64_t>::max());
+    return static_cast<T>(a + b);
+  };
+  T value = spit_out_one_number();
+  while (!std::isfinite(value)) value = spit_out_one_number();
+  return value;
+}
+template <typename T>
+Shrinkable<T> real(const Random &random, int size) {
+  if (size == 0) {
+    return shrinkable::shrinkRecur(std::numeric_limits<T>::quiet_NaN(),
+                                   &shrink::real<T>);
+  }
+  auto stream = rc::detail::bitStreamOf(random);
+  if ((stream.next<uint>() + 1) % (size + 1) == 0) {
+    int somebool = stream.next<int>();
+    if (somebool & 1) {
+      return shrinkable::shrinkRecur(std::numeric_limits<T>::quiet_NaN(),
+                                     &shrink::real<T>);
+    } else {
+      if (somebool & 4) {
+        return shrinkable::shrinkRecur(-std::numeric_limits<T>::infinity(),
+                                       &shrink::real<T>);
+      } else {
+        return shrinkable::shrinkRecur(std::numeric_limits<T>::infinity(),
+                                       &shrink::real<T>);
+      }
+    }
+  }
+  return shrinkable::shrinkRecur(finite_real<T>(random, size), &shrink::real<T>);
+}
+template <typename T>
+Shrinkable<T> finite(const Random &random, int size) {
+  return shrinkable::shrinkRecur(finite_real<T>(random, size), &shrink::real<T>);
 }
 
 extern template Shrinkable<float> real<float>(const Random &random, int size);
@@ -108,6 +141,11 @@ Gen<T> inRange(T min, T max) {
     return shrinkable::shrinkRecur(
         value, [=](T x) { return shrink::towards<T>(x, min); });
   };
+}
+
+template <typename T>
+Gen<T> FiniteReal() {
+  return detail::finite<T>;
 }
 
 } // namespace gen
